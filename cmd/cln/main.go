@@ -8,7 +8,11 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"time"
+
+	"github.com/bidhan948/go-utility-tool/cln/internal/format"
+	"github.com/bidhan948/go-utility-tool/cln/internal/hash"
+	"github.com/bidhan948/go-utility-tool/cln/internal/junk"
+	"github.com/bidhan948/go-utility-tool/cln/internal/scan"
 )
 
 const version = "0.1.0"
@@ -76,6 +80,25 @@ func parseSize(s string) (int64, error) {
 	return v, err
 }
 
+func reorderFlagsFirst(args []string) []string {
+	var flags []string
+	var pos []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "-") {
+			flags = append(flags, a)
+			// capture value if it's a separate token (e.g., "--min 20MB")
+			if !strings.Contains(a, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				flags = append(flags, args[i+1])
+				i++
+			}
+		} else {
+			pos = append(pos, a)
+		}
+	}
+	return append(flags, pos...)
+}
+
 func defaultPaths(paths []string) []string {
 	if len(paths) > 0 {
 		return paths
@@ -85,39 +108,94 @@ func defaultPaths(paths []string) []string {
 
 func runScan(args []string) {
 	fs := flag.NewFlagSet("scan", flag.ExitOnError)
-	minStr := fs.String("min", "100MB", "minimum size threshold (e.g., 100MB)")
+	minStr := fs.String("min", "", "minimum size threshold (e.g., 100MB). If omitted, list all files.")
 	asJSON := fs.Bool("json", false, "output JSON")
-	_ = fs.Parse(args)
+	_ = fs.Parse(reorderFlagsFirst(args))
 
-	minBytes, err := parseSize(*minStr)
+	minBytes, err := parseSize(*minStr) // if "", parseSize returns 0 → no threshold
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "bad --min:", err)
 		os.Exit(1)
 	}
+
 	roots := defaultPaths(fs.Args())
 	ctx := context.Background()
 	ch, _ := scan.WalkLarge(ctx, roots, minBytes)
 
-	var rows [][]string
-	var items []map[string]any
+	// Collect first, then sort for nicer UI
+	var fis []scan.FileInfo
+	var total int64
 	for fi := range ch {
-		if *asJSON {
+		fis = append(fis, fi)
+		total += fi.Size
+	}
+
+	// Sort: larger first, then newer
+	sort.Slice(fis, func(i, j int) bool {
+		if fis[i].Size == fis[j].Size {
+			return fis[i].ModTime.After(fis[j].ModTime)
+		}
+		return fis[i].Size > fis[j].Size
+	})
+
+	count := len(fis)
+	// JSON output
+	if *asJSON {
+		if count == 0 {
+			if minBytes > 0 {
+				fmt.Printf("{\"message\": \"No files found ≥ %s\"}\n", *minStr)
+			} else {
+				fmt.Printf("{\"message\": \"No files found\"}\n")
+			}
+			return
+		}
+		items := make([]map[string]any, 0, count)
+		for _, fi := range fis {
 			items = append(items, map[string]any{
 				"path": fi.Path, "size": fi.Size, "mod_time": fi.ModTime,
 			})
-		} else {
-			rows = append(rows, []string{
-				format.HumanBytes(fi.Size),
-				fi.ModTime.Format(time.RFC3339),
-				fi.Path,
-			})
 		}
-	}
-	if *asJSON {
 		_ = format.PrintJSON(os.Stdout, items)
-	} else {
-		format.PrintTable(os.Stdout, []string{"SIZE", "MODTIME", "PATH"}, rows)
+		thr := "all files"
+		if minBytes > 0 {
+			thr = "≥ " + *minStr
+		}
+		fmt.Printf("\n✅ Listed %d file(s) (%s) — total %s\n", count, thr, format.HumanBytes(total))
+		return
 	}
+
+	// Table output with colors & icons
+	if count == 0 {
+		if minBytes > 0 {
+			fmt.Printf("⚠️  No files found ≥ %s\n", *minStr)
+		} else {
+			fmt.Printf("⚠️  No files found\n")
+		}
+		return
+	}
+
+	rows := make([][]string, 0, count)
+	for _, fi := range fis {
+		sizeStr := format.ColorSize(format.HumanBytes(fi.Size), fi.Size)
+		modStr := fi.ModTime.Format("2006-01-02 15:04:05")
+		rows = append(rows, []string{
+			sizeStr,
+			format.Dim(modStr),
+			format.PathWithIcon(fi.Path),
+		})
+	}
+	headers := []string{
+		format.Bold("📦 SIZE"),
+		format.Bold("🕓 MODIFIED"),
+		format.Bold("📄 PATH"),
+	}
+	format.PrintTable(os.Stdout, headers, rows)
+
+	thr := "all files"
+	if minBytes > 0 {
+		thr = "≥ " + *minStr
+	}
+	fmt.Printf("\n✅ Listed %d file(s) (%s) — total %s\n", count, thr, format.HumanBytes(total))
 }
 
 func runDup(args []string) {
