@@ -8,7 +8,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/bidhan948/go-utility-tool/cln/internal/format"
 	"github.com/bidhan948/go-utility-tool/cln/internal/hash"
@@ -99,13 +98,19 @@ func runScan(args []string) {
 		fmt.Fprintln(os.Stderr, "bad --min:", err)
 		os.Exit(1)
 	}
+
 	roots := defaultPaths(fs.Args())
 	ctx := context.Background()
 	ch, _ := scan.WalkLarge(ctx, roots, minBytes)
 
 	var rows [][]string
 	var items []map[string]any
+	var count int
+	var total int64
+
 	for fi := range ch {
+		count++
+		total += fi.Size
 		if *asJSON {
 			items = append(items, map[string]any{
 				"path": fi.Path, "size": fi.Size, "mod_time": fi.ModTime,
@@ -113,16 +118,31 @@ func runScan(args []string) {
 		} else {
 			rows = append(rows, []string{
 				format.HumanBytes(fi.Size),
-				fi.ModTime.Format(time.RFC3339),
+				fi.ModTime.Format("2006-01-02 15:04:05"),
 				fi.Path,
 			})
 		}
 	}
+
 	if *asJSON {
+		if count == 0 {
+			fmt.Printf("{\"message\": \"No files found ≥ %s\"}\n", *minStr)
+			return
+		}
 		_ = format.PrintJSON(os.Stdout, items)
-	} else {
-		format.PrintTable(os.Stdout, []string{"SIZE", "MODTIME", "PATH"}, rows)
+		fmt.Printf("\n✅ Found %d file(s) ≥ %s (total %s)\n",
+			count, *minStr, format.HumanBytes(total))
+		return
 	}
+
+	if count == 0 {
+		fmt.Printf("⚠️  No files found ≥ %s\n", *minStr)
+		return
+	}
+
+	format.PrintTable(os.Stdout, []string{"SIZE", "MODIFIED", "PATH"}, rows)
+	fmt.Printf("\n✅ Found %d file(s) ≥ %s (total %s)\n",
+		count, *minStr, format.HumanBytes(total))
 }
 
 func runDup(args []string) {
