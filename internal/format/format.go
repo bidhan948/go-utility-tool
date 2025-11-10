@@ -7,6 +7,16 @@ import (
 	"strings"
 )
 
+const (
+	ansiReset  = "\x1b[0m"
+	ansiBold   = "\x1b[1m"
+	ansiDim    = "\x1b[2m"
+	ansiRed    = "\x1b[31m"
+	ansiYellow = "\x1b[33m"
+	ansiGreen  = "\x1b[32m"
+	ansiBlue   = "\x1b[34m"
+)
+
 func HumanBytes(n int64) string {
 	const unit = 1024
 	if n < unit {
@@ -55,4 +65,30 @@ func PrintJSON(w io.Writer, v any) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
+}
+
+// Bold returns bold text if terminal supports ANSI (most do).
+func Bold(s string) string { return ansiBold + s + ansiReset }
+
+// Dim returns dim/secondary-colored text.
+func Dim(s string) string { return ansiDim + s + ansiReset }
+
+// Color wraps s in a given ANSI color code.
+func Color(s, code string) string { return code + s + ansiReset }
+
+// ColorSize color-codes size buckets: ≥1GiB red, ≥100MiB yellow, else green.
+func ColorSize(s string, size int64) string {
+	switch {
+	case size >= 1<<30: // ≥ 1 GiB
+		return Color(s, ansiRed)
+	case size >= 100<<20: // ≥ 100 MiB
+		return Color(s, ansiYellow)
+	default:
+		return Color(s, ansiGreen)
+	}
+}
+
+// PathWithIcon prefixes files with an icon and gives a subtle color to the path.
+func PathWithIcon(p string) string {
+	return "🗎 " + Color(p, ansiBlue)
 }
